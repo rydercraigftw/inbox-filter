@@ -67,6 +67,14 @@
   .refresh-btn { font-size: 13px; color: var(--neon); cursor: pointer; border: none; background: none; padding: 0; font-family: inherit; }
   .error-banner { margin: 16px 20px; background: rgba(255,60,60,0.07); border: 0.5px solid rgba(255,60,60,0.2); border-radius: 10px; padding: 12px 14px; font-size: 13px; color: #ff6b6b; line-height: 1.4; }
   .privacy-note { font-size: 12px; color: var(--text-muted); margin-top: 20px; max-width: 260px; line-height: 1.5; }
+  .unsub-bar { margin: 0 20px 4px; }
+  .unsub-btn { display: flex; align-items: center; gap: 8px; width: 100%; background: transparent; border: 1px solid rgba(255,100,100,0.4); border-radius: 12px; padding: 11px 16px; font-size: 14px; font-weight: 600; color: #ff6b6b; cursor: pointer; box-shadow: 0 0 10px rgba(255,80,80,0.2); transition: background 0.15s, box-shadow 0.15s; font-family: inherit; }
+  .unsub-btn:hover { background: rgba(255,80,80,0.07); box-shadow: 0 0 16px rgba(255,80,80,0.35); }
+  .unsub-btn:active { transform: scale(0.98); }
+  .unsub-btn:disabled { opacity: 0.5; cursor: default; transform: none; }
+  .unsub-icon { font-size: 15px; }
+  .unsub-success { display: flex; align-items: center; gap: 8px; width: 100%; border: 1px solid rgba(0,245,160,0.25); border-radius: 12px; padding: 11px 16px; font-size: 14px; font-weight: 600; color: var(--neon); background: var(--neon-dim); }
+  .unsub-none { font-size: 13px; color: var(--text-muted); padding: 2px 0 8px; }
 </style>
 </head>
 <body>
@@ -119,6 +127,7 @@
       <div class="ai-summary-label">AI Summary</div>
       <div class="ai-summary-text" id="ai-summary-text"></div>
     </div>
+    <div class="unsub-bar" id="unsub-bar" style="display:none;padding-top:12px;"></div>
     <div class="detail-body" id="detail-body"></div>
   </div>
 
@@ -260,10 +269,13 @@ async function openEmail(id) {
   document.getElementById('detail-body').textContent = 'Loading…';
   if (email.summary) { document.getElementById('ai-summary').style.display = 'block'; document.getElementById('ai-summary-text').textContent = email.summary; }
   else { document.getElementById('ai-summary').style.display = 'none'; }
+  document.getElementById('unsub-bar').style.display = 'none';
   try {
     const res = await gapi.client.gmail.users.messages.get({ userId: 'me', id, format: 'full' });
     const body = extractBody(res.result.payload);
     document.getElementById('detail-body').innerHTML = body || `<span style="color:var(--text-muted)">${email.snippet}</span>`;
+    const unsubLink = findUnsubscribeLink(res.result.payload);
+    renderUnsubBar(unsubLink, email.senderEmail);
   } catch(e) { document.getElementById('detail-body').textContent = email.snippet || 'Could not load email body.'; }
 }
 
@@ -281,7 +293,55 @@ function extractBody(payload) {
   return '';
 }
 
-function sanitizeHtml(html) {
+function findUnsubscribeLink(payload) {
+  const tryDecode = data => { try { return atob(data.replace(/-/g,'+').replace(/_/g,'/')); } catch { return ''; } };
+  const headers = payload.headers || [];
+  const listUnsub = headers.find(h => h.name.toLowerCase() === 'list-unsubscribe');
+  if (listUnsub) {
+    const urlMatch = listUnsub.value.match(/<(https?:[^>]+)>/);
+    if (urlMatch) return { type: 'header', url: urlMatch[1] };
+    const mailMatch = listUnsub.value.match(/<mailto:([^>]+)>/);
+    if (mailMatch) return { type: 'mailto', url: 'mailto:' + mailMatch[1] };
+  }
+  const searchParts = parts => {
+    if (!parts) return null;
+    for (const part of parts) {
+      if (part.mimeType === 'text/html' && part.body?.data) {
+        const html = tryDecode(part.body.data);
+        const match = html.match(/href=["']([^"']*unsubscribe[^"']*)['"]/i);
+        if (match) return { type: 'body', url: match[1] };
+      }
+      if (part.parts) { const r = searchParts(part.parts); if (r) return r; }
+    }
+    return null;
+  };
+  if (payload.body?.data && payload.mimeType === 'text/html') {
+    const html = tryDecode(payload.body.data);
+    const match = html.match(/href=["']([^"']*unsubscribe[^"']*)['"]/i);
+    if (match) return { type: 'body', url: match[1] };
+  }
+  return payload.parts ? searchParts(payload.parts) : null;
+}
+
+function renderUnsubBar(link, senderEmail) {
+  const bar = document.getElementById('unsub-bar');
+  bar.style.display = 'block';
+  if (!link) {
+    bar.innerHTML = `<p class="unsub-none">No unsubscribe link found for this email.</p>`;
+    return;
+  }
+  bar.innerHTML = `<button class="unsub-btn" id="unsub-btn"><span class="unsub-icon">🚫</span> Unsubscribe from this sender</button>`;
+  document.getElementById('unsub-btn').addEventListener('click', () => {
+    const btn = document.getElementById('unsub-btn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="unsub-icon">⏳</span> Opening unsubscribe page…';
+    setTimeout(() => {
+      window.open(link.url, '_blank');
+      bar.innerHTML = `<div class="unsub-success"><span>✓</span> Unsubscribe link opened</div>`;
+    }, 300);
+  });
+}
+
   const div = document.createElement('div');
   div.innerHTML = html;
   div.querySelectorAll('script,style,link,meta').forEach(el => el.remove());
